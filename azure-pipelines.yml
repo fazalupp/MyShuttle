@@ -1,0 +1,220 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+variables:     
+  terraformstoragerg: 'myshutleymltformstoragerg'
+  terraformstorageaccount: 'myshutletfstaccountyml'
+  resourcegroupName: 'myshutle-terraform-rg-001'  
+  subscription: 'Visual Studio Professional Subscription (5e022117-1c3d-4e96-a5c2-bcce0cb09a2d)'
+  connectionstringvalue: 'jdbc:mysql://myshuttleserver20001.mysql.database.azure.com:3306/alm?useSSL=true&requireSSL=false&autoReconnect=true&user=mysqldbuser@myshuttleserver20001&password=P2ssw0rd@123'
+  serverpassword: 'P2ssw0rd@123'
+  sqlserverlogin: 'mysqldbuser'
+
+trigger:
+- none
+
+pool:
+  vmImage: 'vs2017-win2016'
+
+stages:
+- stage: 'CI'
+  displayName: 'Build application'
+  jobs: 
+  - job: 'CI'
+    displayName: 'CI Job'
+    steps:
+      - task: CopyFiles@2
+        displayName: 'Copy Files to: /Terraform'
+        inputs:
+          SourceFolder: 'Terraform'
+          Contents: '**'
+          TargetFolder: '$(build.artifactstagingdirectory)/Terraform'
+      - task: PublishPipelineArtifact@1
+        inputs:
+          targetPath: '$(build.artifactstagingdirectory)/Terraform'
+          artifact: 'Terraform'
+          publishLocation: 'pipeline'          
+      - task: Maven@3
+        displayName: 'Maven pom.xml'
+        inputs:
+          mavenPomFile: 'pom.xml'
+          options: '-DskipITs --settings ./maven/settings.xml'
+          publishJUnitResults: true
+          testResultsFiles: '**/surefire-reports/TEST-*.xml'
+          testRunTitle: 'Test'
+          javaHomeOption: 'JDKVersion'
+          mavenVersionOption: 'Default'
+          mavenAuthenticateFeed: false
+          effectivePomSkip: false
+          sonarQubeRunAnalysis: false
+      - task: PublishTestResults@2
+        displayName: 'Publis test result'
+        inputs:
+          testResultsFormat: 'JUnit'
+          testResultsFiles: '**/TEST-*.xml' 
+          searchFolder: '$(System.DefaultWorkingDirectory)'
+      - task: CopyFiles@2
+        displayName: 'Copy Files'
+        inputs:
+          SourceFolder: '$(build.sourcesdirectory)'
+          Contents: |
+            **/target/*.war
+            *.sql
+          TargetFolder: '$(build.artifactstagingdirectory)'
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Artifact'
+        inputs:
+          PathtoPublish: '$(build.artifactstagingdirectory)'
+          ArtifactName: 'drop'
+          publishLocation: 'Container'
+          
+- stage: 'CD'
+  displayName: 'Terraform jobs'
+  jobs:
+  - deployment: DeployResources
+    displayName: Deploy Azure Tesources
+    environment: 'dev'
+    
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            
+            # - task: AzureCLI@2
+            #   inputs:
+            #     azureSubscription: '$(subscription)'
+            #     scriptType: 'batch'
+            #     scriptLocation: 'inlineScript'
+            #     inlineScript: |
+            #       # this will create Azure resource group
+            #       call az group create --location westus --name $(terraformstoragerg)
+            
+            #       call az storage account create --name $(terraformstorageaccount) --resource-group $(terraformstoragerg) --location westus --sku Standard_LRS
+            
+            #       call az storage container create --name terraform --account-name $(terraformstorageaccount)
+            
+            #       call az storage account keys list -g $(terraformstoragerg) -n $(terraformstorageaccount)
+
+            # - task: AzurePowerShell@3
+            #   inputs:
+            #     azureSubscription: '$(subscription)'
+            #     ScriptType: 'InlineScript'
+            #     Inline: |
+            #       $key=(Get-AzureRmStorageAccountKey -ResourceGroupName $(terraformstoragerg) -AccountName $(terraformstorageaccount)).Value[0]
+            
+            #       Write-Host "##vso[task.setvariable variable=storagekey]$key"
+            #     azurePowerShellVersion: 'LatestVersion'
+
+            - task: CopyFiles@2
+              inputs:
+                SourceFolder: '$(Pipeline.Workspace)/Terraform'
+                Contents: |
+                  **/*.tf
+                  **/*.tfvars
+                  **/*.sh
+                TargetFolder: '$(System.DefaultWorkingDirectory)'
+
+            - task: replacetokens@3
+              inputs:
+                targetFiles: |
+                  **/*.tf
+                  **/*.tfvars
+                encoding: 'auto'
+                writeBOM: true
+                escapeType: 'none'
+                actionOnMissing: 'warn'
+                keepToken: false
+                tokenPrefix: '__'
+                tokenSuffix: '__'
+                useLegacyPattern: false
+                enableTelemetry: true
+
+            - task: CopyFiles@2
+              inputs:
+                SourceFolder: '$(Pipeline.Workspace)'
+                Contents: |
+                  **/target/*.war
+                  **/*.sql
+                TargetFolder: '$(System.DefaultWorkingDirectory)'
+
+            - task: TerraformInstaller@0
+              displayName:  Install Terraform
+              inputs:
+                terraformVersion: '0.12.3'
+
+            - task: AzureCLI@2
+              inputs:
+                azureSubscription: '$(subscription)'
+                scriptType: 'batch'
+                scriptLocation: 'inlineScript'
+                inlineScript: 'terraform init -backend-config="backend/terraform.backend.dev.tfvars"'
+            # - task: TerraformTaskV1@0
+            #   displayName: Terraform Init
+            #   inputs:
+            #     provider: 'azurerm'
+            #     command: 'init'
+            #     workingDirectory: '$(System.DefaultWorkingDirectory)'
+            #     backendServiceArm: '$(subscription)'
+            #     backendAzureRmResourceGroupName: '$(terraformstoragerg)'
+            #     backendAzureRmStorageAccountName: '$(terraformstorageaccount)'
+            #     backendAzureRmContainerName: 'terraform'
+            #     backendAzureRmKey: 'terraform.tfstate'
+
+            - task: TerraformTaskV1@0
+              displayName: Terraform Plan
+              inputs:
+                provider: 'azurerm'
+                command: 'plan'
+                workingDirectory: '$(System.DefaultWorkingDirectory)'
+                environmentServiceNameAzureRM: '$(subscription)'
+
+            - task: TerraformTaskV1@0
+              displayName: 'Terraform : apply -auto-approve'
+              inputs:
+                provider: 'azurerm'
+                command: 'apply'
+                workingDirectory: '$(System.DefaultWorkingDirectory)'
+                commandOptions: '-auto-approve'
+                environmentServiceNameAzureRM: '$(subscription)'
+            
+            - task: AzureMysqlDeployment@1
+              displayName: 'Execute Azure MySQL : SqlTaskFile'
+              inputs:
+                azureSubscription: '$(subscription)'
+                ServerName: 'myshuttleserver20001.mysql.database.azure.com'
+                SqlUsername: 'mysqldbuser@myshuttleserver20001'
+                SqlPassword: '$(serverpassword)'
+                TaskNameSelector: 'SqlTaskFile'
+                SqlFile: '$(System.DefaultWorkingDirectory)/drop/CreateMYSQLDB.sql'
+                IpDetectionMethod: 'AutoDetect'
+            
+            # - task: AzureRmWebAppDeployment@4
+            #   displayName: 'Deploy Azure App Service'
+            #   inputs:
+            #     ConnectionType: 'AzureRM'
+            #     azureSubscription: '$(subscription)'
+            #     appType: 'webApp'
+            #     WebAppName: 'MyShuttleApp20001'
+            #     packageForLinux: '$(System.DefaultWorkingDirectory)/**/*.war'
+
+- stage: 'Dev'
+  displayName: 'Deploy to Dev'
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy to Azure Tesources
+    environment: 'dev'    
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureRmWebAppDeployment@4
+            displayName: 'Deploy Azure App Service'
+            inputs:
+              ConnectionType: 'AzureRM'
+              azureSubscription: '$(subscription)'
+              appType: 'webApp'
+              WebAppName: 'MyShuttleApp20001'
+              packageForLinux: '$(Pipeline.Workspace)/drop/**/*.war'
